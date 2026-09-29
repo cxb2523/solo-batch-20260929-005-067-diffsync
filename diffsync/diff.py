@@ -19,7 +19,8 @@ from functools import total_ordering
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Type
 
 from .enum import DiffSyncActions
-from .exceptions import ObjectAlreadyExists
+from .exceptions import ObjectAlreadyExists, ObjectNotFound
+from .uid import decode, encode, is_new_uid
 from .utils import OrderedDefaultDict, intersection
 
 # This workaround is used because we are defining a method called `str` in our class definition, which therefore renders
@@ -35,9 +36,13 @@ class Diff:
         self.children = OrderedDefaultDict[StrType, Dict[StrType, DiffElement]](dict)
         """DefaultDict for storing DiffElement objects.
 
-        `self.children[group][unique_id] == DiffElement(...)`
+        In the common (non-colliding) case each group maps ``element.name`` -> element, preserving
+        the historical format exactly. Entries that collide on a name are promoted to their
+        unambiguous uid keys; :attr:`uid_index` maps every uid to its element regardless.
         """
         self.models_processed = 0
+        # Secondary index: group -> {new_uid: element} for exact uid lookups on name-keyed entries.
+        self.uid_index: Dict[StrType, Dict[StrType, DiffElement]] = OrderedDefaultDict(dict)
 
     def __len__(self) -> int:
         """Total number of DiffElements stored herein."""
@@ -53,17 +58,98 @@ class Diff:
         the completed Diff to a file or database record.
         """
 
+    @staticmethod
+    def _element_storage_uid(element: "DiffElement") -> str:
+        """Build the collision-free uid for an element's primary-key values.
+
+        All uid construction in the diff layer goes through :mod:`diffsync.uid`; the uid is derived
+        from ``element.keys`` (the ordered identifiers) rather than ``element.name`` (the
+        shortname), because the shortname is explicitly not guaranteed to be globally unique.
+        """
+        return encode(str(element.keys[key]) for key in element.keys)
+
+    @staticmethod
+    def _legacy_storage_uid(element: "DiffElement") -> str:
+        """Build the historical, ambiguous uid for an element (used for legacy reads only)."""
+        return "__".join(str(element.keys[key]) for key in element.keys)
+
     def add(self, element: "DiffElement") -> None:
         """Add a new DiffElement to the changeset of this Diff.
 
-        Raises:
-            ObjectAlreadyExists: if an element of the same type and same name is already stored.
-        """
-        # Note that element.name is usually a DiffSyncModel.shortname() -- i.e., NOT guaranteed globally unique!!
-        if element.name in self.children[element.type]:
-            raise ObjectAlreadyExists(f"Already storing a {element.type} named {element.name}", element)
+        Elements are keyed by their human-readable ``name`` as in the historical format, which keeps
+        ``self.children`` and :meth:`dict` backward compatible. If two elements of the same type
+        share a name but have different primary keys (the exact case the legacy ``"__"`` uid could
+        not distinguish), the colliding entries are transparently re-keyed by their unambiguous
+        uids. An exact uid duplicate still raises, as before.
 
-        self.children[element.type][element.name] = element
+        Raises:
+            ObjectAlreadyExists: if an element with the same unique id is already stored.
+        """
+        group = self.children[element.type]
+        storage_uid = self._element_storage_uid(element)
+
+        # Exact-uid dedupe first: re-adding the same logical element must always fail.
+        for existing in group.values():
+            if self._element_storage_uid(existing) == storage_uid:
+                raise ObjectAlreadyExists(f"Already storing a {element.type} named {element.name}", element)
+
+        self.uid_index[element.type][storage_uid] = element
+
+        name_key = element.name
+        incumbent = group.get(name_key)
+        if incumbent is None and not is_new_uid(name_key):
+            # Common, collision-free case: keep the historical name key verbatim.
+            group[name_key] = element
+            return
+
+        # Collision on the name key (or an unusual name that mimics a new uid): promote both the
+        # incumbent and the newcomer to their unambiguous uid keys.
+        if incumbent is not None:
+            del group[name_key]
+            group[self._element_storage_uid(incumbent)] = incumbent
+        group[storage_uid] = element
+
+    def _find_element(self, model_type: StrType, uid: StrType) -> Optional["DiffElement"]:
+        """Find a stored element by type and uid (new-scheme or legacy), without raising.
+
+        A legacy uid is matched verbatim against the legacy uids of stored elements -- it is never
+        split or reinterpreted. A malformed new-scheme uid never matches, so callers can flag it
+        without interrupting anything.
+        """
+        group = self.children.get(model_type)
+        if not group:
+            return None
+        if is_new_uid(uid):
+            stored = group.get(uid)
+            if stored is None:
+                stored = self.uid_index.get(model_type, {}).get(uid)
+            if stored is not None:
+                return stored
+            _fields, _new, invalid = decode(uid)
+            if invalid:
+                return None
+            # Well-formed but absent: no element.
+            return None
+        # Legacy uid: exact historical-uid comparison against every stored element.
+        for element in group.values():
+            if self._legacy_storage_uid(element) == uid:
+                return element
+        return None
+
+    def get_element(self, model_type: StrType, uid: StrType) -> "DiffElement":
+        """Retrieve a stored element by type and uid.
+
+        Args:
+            model_type: Model type/group name of the element.
+            uid: New-scheme uid (encoded identifiers) or a legacy uid read from a historical diff.
+
+        Raises:
+            ObjectNotFound: if no matching element exists.
+        """
+        element = self._find_element(model_type, uid)
+        if element is None:
+            raise ObjectNotFound(f"No {model_type} element with uid {uid} present in diff")
+        return element
 
     def groups(self) -> List[StrType]:
         """Get the list of all group keys in self.children."""
@@ -148,7 +234,11 @@ class Diff:
         return result
 
     def dict(self) -> Dict[StrType, Dict[StrType, Dict]]:
-        """Build a dictionary representation of this Diff."""
+        """Build a dictionary representation of this Diff.
+
+        The public shape is unchanged from the historical format (elements keyed by their
+        ``name``/shortname); the unambiguous uid is only used internally for storage.
+        """
         result = OrderedDefaultDict[str, Dict](dict)
         for child in self.get_children():
             if child.has_diffs(include_children=True):

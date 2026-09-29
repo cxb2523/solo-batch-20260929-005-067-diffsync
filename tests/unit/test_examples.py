@@ -15,8 +15,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import os
 import subprocess
+import sys
 from os.path import dirname, join
+
+REPO_ROOT = dirname(dirname(dirname(__file__)))
+
+
+def _run_example(main_path, cwd):
+    """Run an example with the repo root importable, on every platform."""
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = REPO_ROOT + (os.pathsep + existing if existing else "")
+    subprocess.run([sys.executable, main_path], cwd=cwd, check=True, env=env)
 
 EXAMPLES = join(dirname(dirname(dirname(__file__))), "examples")
 
@@ -26,7 +38,7 @@ def test_example_1():
     example1_dir = join(EXAMPLES, "01-multiple-data-sources")
     example1_main = join(example1_dir, "main.py")
     # Run it and make sure it doesn't raise an exception or otherwise exit with a non-zero code.
-    subprocess.run(example1_main, cwd=example1_dir, check=True)
+    _run_example(example1_main, example1_dir)
 
 
 def test_example_2():
@@ -34,7 +46,7 @@ def test_example_2():
     example2_dir = join(EXAMPLES, "02-callback-function")
     example2_main = join(example2_dir, "main.py")
     # Run it and make sure it doesn't raise an exception or otherwise exit with a non-zero code.
-    subprocess.run(example2_main, cwd=example2_dir, check=True)
+    _run_example(example2_main, example2_dir)
 
 
 def test_example_4():
@@ -42,7 +54,7 @@ def test_example_4():
     example4_dir = join(EXAMPLES, "04-get-update-instantiate")
     example4_main = join(example4_dir, "main.py")
     # Run it and make sure it doesn't raise an exception or otherwise exit with a non-zero code.
-    subprocess.run(example4_main, cwd=example4_dir, check=True)
+    _run_example(example4_main, example4_dir)
 
 
 def test_example_6():
@@ -50,4 +62,4 @@ def test_example_6():
     example6_dir = join(EXAMPLES, "06-ip-prefixes")
     example6_main = join(example6_dir, "main.py")
     # Run it and make sure it doesn't raise an exception or otherwise exit with a non-zero code.
-    subprocess.run(example6_main, cwd=example6_dir, check=True)
+    _run_example(example6_main, example6_dir)

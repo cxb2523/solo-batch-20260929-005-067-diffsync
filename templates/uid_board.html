@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>diffsync UID Board</title>
+  <style>
+    :root {
+      --bg: #0f1420;
+      --panel: #181f2e;
+      --panel-2: #1f2839;
+      --text: #e6ebf5;
+      --muted: #93a0b5;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --bad: #f85149;
+      --line: #2a3346;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 18px; margin: 0; }
+    .counters { display: flex; gap: 12px; margin-left: auto; flex-wrap: wrap; }
+    .counter {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .counter b { font-size: 16px; }
+    .counter.collision b { color: var(--bad); }
+    .counter.degrade b { color: var(--warn); }
+    main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 16px 24px;
+    }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    .pane {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      min-height: 320px;
+    }
+    .pane h2 { margin: 0 0 12px; font-size: 15px; color: var(--accent); }
+    label { display: block; color: var(--muted); margin: 10px 0 4px; font-size: 12px; }
+    input, textarea {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    textarea { min-height: 70px; resize: vertical; }
+    .uid-box {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      word-break: break-all;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .uid-box .tag {
+      display: inline-block;
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    .tag.legacy { background: #3d2c00; color: var(--warn); }
+    .tag.new { background: #0d2f16; color: var(--ok); }
+    .tag.invalid { background: #3d1414; color: var(--bad); }
+    .uid-box.invalid { border-color: var(--bad); background: #2a1718; }
+    .uid-box.legacy { border-color: #5a4410; }
+    .uid-box.new { border-color: #1f5130; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .collision-note { color: var(--bad); font-size: 12px; margin-top: 8px; }
+    button {
+      background: var(--accent);
+      color: #08111f;
+      border: 0;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    details { margin-top: 14px; }
+    summary { cursor: pointer; color: var(--muted); }
+    pre {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      overflow: auto;
+      font-size: 12px;
+    }
+    .status { font-size: 12px; color: var(--muted); margin-left: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>diffsync UID 对照板</h1>
+    <span class="status" id="status">输入即刷新…</span>
+    <div class="counters">
+      <div class="counter collision">碰撞 <b id="collision-count">0</b></div>
+      <div class="counter degrade">降级 <b id="degradation-count">0</b></div>
+      <button id="reset-btn" style="margin-top:0">重置</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="pane" id="left-pane">
+      <h2>左栏 · 模型名 / 主键（新 uid 生成）</h2>
+      <label for="model">模型名（可含下划线）</label>
+      <input id="model" value="my_model" autocomplete="off" placeholder="例如 my_model" />
+      <label for="fields">主键字段（逗号或换行分隔，可含 _ 与 __）</label>
+      <textarea id="fields" placeholder="例如 a, _b">a, _b</textarea>
+
+      <div class="uid-box legacy" id="left-legacy">
+        <span class="tag legacy">旧 uid</span><span id="left-legacy-text"></span>
+        <div class="muted" id="left-legacy-hint"></div>
+      </div>
+      <div class="uid-box new" id="left-new">
+        <span class="tag new">新 uid</span><span id="left-new-text"></span>
+        <div class="muted" id="left-new-fields"></div>
+      </div>
+      <div class="collision-note" id="left-collision" hidden></div>
+
+      <details>
+        <summary>再试一组会撞旧键的主键（把右栏也填上）</summary>
+        <p class="muted">
+          左栏输入 <code>a, _b</code>，右栏或第二组输入 <code>a_, b</code> —— 旧 uid 都是
+          <code>a___b</code>，新 uid 互不相同。
+        </p>
+      </details>
+    </section>
+
+    <section class="pane" id="right-pane">
+      <h2>右栏 · 原始 uid 解析（旧 uid 原样读回 / 非法 uid 仅标红）</h2>
+      <label for="uids">粘贴 uid（每行一个；改左栏或这里都会实时刷新）</label>
+      <textarea id="uids" placeholder="每行一个 uid"></textarea>
+      <div id="right-results"></div>
+      <div class="muted" style="margin-top:8px">
+        非法示例：<code>v2__9:zzz</code> —— 只在本栏标红，页面不会中断。
+      </div>
+    </section>
+  </main>
+
+  <main style="padding-top:0">
+    <section class="pane" style="grid-column: 1 / -1">
+      <h2>本会话碰撞与降级明细</h2>
+      <pre id="metrics-json"></pre>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='board.js') }}"></script>
+</body>
+</html>
