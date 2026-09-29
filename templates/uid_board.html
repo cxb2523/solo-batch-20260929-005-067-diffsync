@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DiffSync UID 对照看板</title>
+  <style>
+    :root {
+      --bg: #0f1420;
+      --panel: #1a2233;
+      --panel2: #202b41;
+      --text: #e6ecf5;
+      --muted: #8a97ad;
+      --accent: #4f9cff;
+      --ok: #35c48d;
+      --warn: #f0b429;
+      --bad: #ef5d5d;
+      --border: #2c3850;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+    .controls {
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;
+      background: var(--panel); padding: 16px; border-radius: 10px; margin-bottom: 20px;
+      border: 1px solid var(--border);
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    .field input {
+      background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; border-radius: 6px; font-size: 14px; min-width: 220px;
+    }
+    .field input:focus { outline: none; border-color: var(--accent); }
+    .counters { display: flex; gap: 12px; margin-left: auto; }
+    .counter {
+      background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 14px; text-align: center; min-width: 96px;
+    }
+    .counter .num { font-size: 22px; font-weight: 700; }
+    .counter .lbl { font-size: 11px; color: var(--muted); }
+    .counter.collision .num { color: var(--warn); }
+    .counter.degraded .num { color: var(--bad); }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
+    .column {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 18px;
+    }
+    .column h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+    .tag { font-size: 10px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); }
+    .tag.legacy { color: var(--warn); border-color: var(--warn); }
+    .tag.new { color: var(--ok); border-color: var(--ok); }
+    .row { margin-bottom: 12px; }
+    .row .k { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .uid-box {
+      font-family: "Cascadia Code", Consolas, monospace; font-size: 14px;
+      background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px 12px; word-break: break-all; min-height: 40px;
+    }
+    .uid-box.bad { border-color: var(--bad); color: var(--bad); }
+    .uid-box.collides { border-color: var(--warn); }
+    .badge { display: inline-block; font-size: 11px; margin-top: 6px; padding: 2px 8px; border-radius: 4px; }
+    .badge.ok { background: rgba(53,196,141,.15); color: var(--ok); }
+    .badge.warn { background: rgba(240,180,41,.15); color: var(--warn); }
+    .badge.bad { background: rgba(239,93,93,.15); color: var(--bad); }
+    .decode-input {
+      width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; border-radius: 6px; font-family: Consolas, monospace; font-size: 13px; margin-top: 4px;
+    }
+    .decode-input:focus { outline: none; border-color: var(--accent); }
+    button {
+      background: var(--accent); color: #fff; border: none; padding: 9px 16px;
+      border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    button.secondary { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+    button:hover { filter: brightness(1.1); }
+    .storelist { margin-top: 20px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px; }
+    .storelist h2 { font-size: 14px; margin: 0 0 10px; }
+    .storelist ul { margin: 0; padding-left: 18px; font-family: Consolas, monospace; font-size: 13px; color: var(--muted); }
+    .flash { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <h1>DiffSync UID 新旧对照看板</h1>
+  <div class="sub">左栏为历史 <code>__</code> 拼接 uid（含下划线会撞键），右栏为转义 + 长度前缀的新 uid（彻底消歧）。改任意输入即实时刷新。</div>
+
+  <div class="controls">
+    <div class="field">
+      <label for="model">模型名 model</label>
+      <input id="model" value="interface" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="identifiers">主键 identifiers（逗号分隔，即改即刷）</label>
+      <input id="identifiers" value="a,b__c" autocomplete="off" placeholder="device_name,name" />
+    </div>
+    <div class="counters">
+      <div class="counter collision"><div class="num" id="collisionCount">0</div><div class="lbl">碰撞计数</div></div>
+      <div class="counter degraded"><div class="num" id="degradationCount">0</div><div class="lbl">降级计数</div></div>
+    </div>
+  </div>
+
+  <div class="columns">
+    <section class="column" id="legacyColumn">
+      <h2>旧 UID <span class="tag legacy">legacy __</span></h2>
+      <div class="row">
+        <div class="k">模型名 / 主键</div>
+        <div class="uid-box" id="legacySource">—</div>
+      </div>
+      <div class="row">
+        <div class="k">旧 uid 字符串</div>
+        <div class="uid-box" id="legacyUid">—</div>
+        <div class="badge ok" id="legacyStatus">可读</div>
+      </div>
+      <div class="row">
+        <div class="k">粘贴任意 uid 校验（非法仅标红，不中断）</div>
+        <input class="decode-input" id="legacyDecode" placeholder="例如 a__b__c" autocomplete="off" />
+        <div class="uid-box bad" id="legacyDecodeOut" style="display:none;"></div>
+      </div>
+    </section>
+
+    <section class="column" id="newColumn">
+      <h2>新 UID <span class="tag new">escaped + length prefix</span></h2>
+      <div class="row">
+        <div class="k">模型名 / 主键（长度前缀分段）</div>
+        <div class="uid-box" id="newSource">—</div>
+      </div>
+      <div class="row">
+        <div class="k">新 uid 字符串</div>
+        <div class="uid-box" id="newUid">—</div>
+        <div class="badge ok" id="newStatus">零碰撞</div>
+      </div>
+      <div class="row">
+        <div class="k">粘贴任意 uid 校验（非法仅标红，不中断）</div>
+        <input class="decode-input" id="newDecode" placeholder="例如 v2¶9:interface·1:a·4:b__c" autocomplete="off" />
+        <div class="uid-box" id="newDecodeOut" style="display:none;"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="storelist">
+    <h2>演示 LocalStore（含一条仅旧 uid 缓存 + 一对下划线碰撞行）</h2>
+    <ul id="storedList"></ul>
+    <div style="margin-top:12px; display:flex; gap:10px;">
+      <button id="replayBtn">重放碰撞记录 (a / b__c)</button>
+      <button class="secondary" id="illegalBtn">模拟非法 uid 读取</button>
+    </div>
+    <div class="flash" id="flash"></div>
+  </div>
+
+  <script src="{{ url_for('static', filename='board.js') }}"></script>
+</body>
+</html>

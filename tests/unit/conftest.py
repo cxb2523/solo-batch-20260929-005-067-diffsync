@@ -486,3 +486,43 @@ def diff_element_with_children():
     parent_element.add_child(child_element_4)
 
     return parent_element
+
+
+@pytest.fixture
+def redisdb(monkeypatch):
+    """Provide an in-process Redis-compatible client for RedisStore tests.
+
+    Uses ``fakeredis`` with Lua support (``lupa``) so the suite does not require a
+    real ``redis-server`` binary. The store's ``Redis`` class is redirected at the
+    fake client, regardless of the unix-socket URL built by ``test_redisstore.py``.
+    """
+    fakeredis = pytest.importorskip("fakeredis")
+    client = fakeredis.FakeStrictRedis(host="localhost", port=6379, db=0)
+    # test_redisstore.py derives a "unix://<path>" URL from this kwarg; supply a stub.
+    client.connection_pool.connection_kwargs["path"] = "fakeredis"
+
+    import diffsync.store.redis as redis_store_module
+
+    class _FakeRedis:
+        """Static stand-in for the redis.Redis class used by RedisStore."""
+
+        @staticmethod
+        def from_url(*args, **kwargs):
+            return client
+
+        def __call__(self, *args, **kwargs):
+            return client
+
+    monkeypatch.setattr(redis_store_module, "Redis", _FakeRedis)
+    yield client
+    client.flushall()
+
+
+@pytest.fixture(autouse=True)
+def _reset_uid_metrics():
+    """Reset the process-wide uid collision/degradation counters around every test."""
+    from diffsync import uid as uid_module
+
+    uid_module.metrics.reset()
+    yield
+    uid_module.metrics.reset()

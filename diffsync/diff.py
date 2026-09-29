@@ -33,10 +33,17 @@ class Diff:
     def __init__(self) -> None:
         """Initialize a new, empty Diff object."""
         self.children = OrderedDefaultDict[StrType, Dict[StrType, DiffElement]](dict)
-        """DefaultDict for storing DiffElement objects.
+        """DefaultDict for storing DiffElement objects, keyed by DiffElement.name.
 
-        `self.children[group][unique_id] == DiffElement(...)`
+        `self.children[group][element.name] == DiffElement(...)` -- note that the name
+        is a shortname and is NOT guaranteed unique; the unambiguous index lives in
+        `self._uid_index`.
         """
+        # Unambiguous index: children[group] keyed by the uid module token.
+        self._uid_index: "OrderedDefaultDict[StrType, Dict[StrType, DiffElement]]" = OrderedDefaultDict(dict)
+        # Legacy "__"-joined tokens seen in each group, so historical diffs that only
+        # carry ambiguous uids still resolve.
+        self._legacy_index: "OrderedDefaultDict[StrType, Dict[StrType, DiffElement]]" = OrderedDefaultDict(dict)
         self.models_processed = 0
 
     def __len__(self) -> int:
@@ -57,13 +64,52 @@ class Diff:
         """Add a new DiffElement to the changeset of this Diff.
 
         Raises:
-            ObjectAlreadyExists: if an element of the same type and same name is already stored.
+            ObjectAlreadyExists: if an identical element (same type, keys and name) is already stored.
+
+        Elements are indexed unambiguously via :mod:`diffsync.uid`; a different element
+        that happens to share the same (ambiguous) legacy shortname is retained and
+        records a collision metric instead of silently overwriting the existing entry.
         """
         # Note that element.name is usually a DiffSyncModel.shortname() -- i.e., NOT guaranteed globally unique!!
-        if element.name in self.children[element.type]:
+        token = element.get_uid()
+        existing_by_uid = self._uid_index[element.type].get(token)
+        if existing_by_uid is not None and existing_by_uid.name == element.name:
+            # Same unambiguous identity AND same shortname: a true duplicate.
             raise ObjectAlreadyExists(f"Already storing a {element.type} named {element.name}", element)
 
-        self.children[element.type][element.name] = element
+        if element.name in self.children[element.type]:
+            # Same shortname, different unambiguous identity: historical "__" uid would
+            # have collapsed these two; record the collision and keep both.
+            from .uid import metrics  # local import to avoid an import cycle at module load
+
+            metrics.record_collision(element.type, element.get_legacy_uid(), location="diff")
+            existing = self.children[element.type][element.name]
+            if existing is element or (existing.get_uid() == token and existing.name == element.name):
+                raise ObjectAlreadyExists(f"Already storing a {element.type} named {element.name}", element)
+        else:
+            self.children[element.type][element.name] = element
+
+        self._uid_index[element.type][token] = element
+        self._legacy_index[element.type][element.get_legacy_uid()] = element
+
+    def get_by_uid(self, obj_type: StrType, uid_value: StrType) -> Optional["DiffElement"]:
+        """Look up a stored element of ``obj_type`` by new or legacy uid.
+
+        Malformed new-format uids are reported as degradations but never raise here.
+        Returns None if no matching element is present.
+        """
+        from .uid import IllegalUIDError, is_new_uid, metrics, split_model_uid
+
+        if is_new_uid(uid_value):
+            try:
+                decoded_type, _ = split_model_uid(uid_value)
+            except IllegalUIDError:
+                metrics.report_illegal_uid(uid_value, location="diff")
+                return None
+            if decoded_type != obj_type:
+                metrics.record_degradation("model_mismatch", f"{decoded_type}!={obj_type}:{uid_value!r}", "diff")
+            return self._uid_index[obj_type].get(uid_value)
+        return self._legacy_index[obj_type].get(uid_value)
 
     def groups(self) -> List[StrType]:
         """Get the list of all group keys in self.children."""
@@ -225,6 +271,22 @@ class DiffElement:  # pylint: disable=too-many-instance-attributes
             f'{self.type} "{self.name}" : {self.keys} : '
             f"{self.source_name} → {self.dest_name} : {self.get_attrs_diffs()}"
         )
+
+    def _identifier_keys(self) -> List[StrType]:
+        """Ordered identifier names for this element (keys dict, in insertion order)."""
+        return list(self.keys.keys())
+
+    def get_legacy_uid(self) -> StrType:
+        """Reproduce the original ambiguous "__"-joined uid for this element."""
+        from .uid import legacy_uid
+
+        return legacy_uid(self.keys[key] for key in self._identifier_keys())
+
+    def get_uid(self) -> StrType:
+        """Return the unambiguous, length-prefixed uid token for this element."""
+        from .uid import encode_model_uid
+
+        return encode_model_uid(self.type, [self.keys[key] for key in self._identifier_keys()])
 
     def __len__(self) -> int:
         """Total number of DiffElements in this one, including itself."""
